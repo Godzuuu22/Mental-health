@@ -3,21 +3,24 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-// MySQL connection configuration 
-// For local development (XAMPP/WAMP), Host is usually 'localhost', User is 'root', and Password is empty.
-const pool = mysql.createPool({
+/**
+ * MySQL connection configuration
+ * Supports both individual variables and a single MYSQL_URL (common for Railway/Render).
+ */
+const connectionConfig = process.env.MYSQL_URL || {
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
   password: process.env.DB_PASSWORD || "",
-  database: process.env.DB_NAME || "growth_discipline_db",
+  database: process.env.DB_NAME || "railway", // Default to 'railway' for production compatibility
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-});
+};
+
+const pool = mysql.createPool(connectionConfig);
 
 /**
  * Initializes the database tables required for the Growth & Discipline AI System.
- * Specifically required by the SE2 Final Laboratory.
  */
 export const initDb = async () => {
   try {
@@ -32,7 +35,7 @@ export const initDb = async () => {
       )
     `);
 
-    // 2. Habits table (Part of the core Laboratory requirements)
+    // 2. Habits table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS habits (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -44,7 +47,7 @@ export const initDb = async () => {
       )
     `);
 
-    // 3. AI responses table (For history and advisor context)
+    // 3. AI responses table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS ai_response (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -56,10 +59,10 @@ export const initDb = async () => {
       )
     `);
 
-    console.log(">>> MySQL Database tables ready.");
+    console.log(">>> Database initialization sequence complete.");
   } catch (err) {
     console.error(">>> ERROR initializing MySQL database:", err.message);
-    console.warn(">>> Make sure your MySQL server is running and credentials in .env are correct.");
+    console.warn(">>> CHECK: 1. Is your MySQL server running? 2. Are credentials correct? 3. Does the database exist?");
   }
 };
 
