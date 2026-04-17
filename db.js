@@ -11,10 +11,13 @@ const connectionConfig = process.env.MYSQL_URL || {
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
   password: process.env.DB_PASSWORD || "",
-  database: process.env.DB_NAME || "railway", // Default to 'railway' for production compatibility
+  database: process.env.DB_NAME || "railway", 
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
+  ssl: {
+    rejectUnauthorized: false // Often required for Railway production MySQL
+  }
 };
 
 const pool = mysql.createPool(connectionConfig);
@@ -24,8 +27,11 @@ const pool = mysql.createPool(connectionConfig);
  */
 export const initDb = async () => {
   try {
-    console.log(">>> Connecting to MySQL and initializing tables...");
+    console.log(">>> [DB] Checking connection & initializing tables...");
     
+    // Test the connection
+    await pool.query("SELECT 1");
+
     // 1. Users table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
@@ -59,10 +65,10 @@ export const initDb = async () => {
       )
     `);
 
-    console.log(">>> Database initialization sequence complete.");
+    console.log(">>> [DB] Initialization complete.");
   } catch (err) {
-    console.error(">>> ERROR initializing MySQL database:", err.message);
-    console.warn(">>> CHECK: 1. Is your MySQL server running? 2. Are credentials correct? 3. Does the database exist?");
+    console.error(">>> [DB] Initialization Error:", err.message);
+    // Note: Don't re-throw here so the server can at least start and provide health-checks
   }
 };
 
