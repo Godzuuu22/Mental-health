@@ -1,30 +1,50 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import { initDb } from "./db.js";
-import pool from "./db.js";
+import mysql from "mysql2/promise";
 
-// --- Global Error Handlers ---
-process.on('uncaughtException', (err) => console.error('>>> [CRITICAL] Uncaught:', err));
-process.on('unhandledRejection', (reason) => console.error('>>> [CRITICAL] Unhandled Rejection:', reason));
+// --- STARTUP TRACE ---
+console.log(">>> [BOOT] Server initializing...");
 
+// 1. Error Handlers
+process.on('uncaughtException', (err) => console.error('>>> [FATAL] Uncaught:', err));
+process.on('unhandledRejection', (reason) => console.error('>>> [FATAL] Unhandled:', reason));
+
+// 2. Load Config
 dotenv.config();
+const PORT = process.env.PORT || 3000;
+const MYSQL_URL = process.env.MYSQL_URL;
+
+console.log(`>>> [BOOT] Port: ${PORT}, URL provided: ${!!MYSQL_URL}`);
+
+// 3. Database Setup (Unified)
+let pool;
+try {
+  const connectionConfig = MYSQL_URL || {
+    host: process.env.DB_HOST || "localhost",
+    user: process.env.DB_USER || "root",
+    password: process.env.DB_PASSWORD || "",
+    database: process.env.DB_NAME || "railway",
+    ssl: { rejectUnauthorized: false }
+  };
+  pool = mysql.createPool(connectionConfig);
+  console.log(">>> [DB] Pool created successfully.");
+} catch (err) {
+  console.error(">>> [DB] FAIL: Pool creation error:", err.message);
+}
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
 app.use(cors());
 app.use(express.json());
 
-// --- Health ---
-app.get("/health", (req, res) => res.json({ status: "ok", node: process.version }));
+// --- Endpoints ---
+app.get("/health", (req, res) => res.json({ status: "alive", time: new Date().toISOString() }));
 
-// --- Habits ---
 app.get("/habits", async (req, res) => {
   try {
-    const [rows] = await pool.query("SELECT * FROM habits ORDER BY timestamp DESC LIMIT 50");
+    const [rows] = await pool.query("SELECT * FROM habits ORDER BY timestamp DESC LIMIT 100");
     res.json(rows);
-  } catch (err) { res.status(500).json({ error: "DB error" }); }
+  } catch (err) { res.status(500).json({ error: "Database offline" }); }
 });
 
 app.post("/habits", async (req, res) => {
@@ -38,18 +58,16 @@ app.post("/habits", async (req, res) => {
       userId = r.insertId;
     }
     await pool.query("INSERT INTO habits (user_id, activity, status) VALUES (?, ?, ?)", [userId, activity, status || "pending"]);
-    res.status(201).json({ success: true });
-  } catch (err) { res.status(500).json({ error: "DB log error" }); }
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: "Log failure" }); }
 });
 
-// --- AI Chat (Using Native Fetch for Node 22+) ---
 app.post("/api/chat", async (req, res) => {
   const { messages } = req.body;
   const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: "AI key missing" });
+  if (!apiKey) return res.status(500).json({ error: "Mentor node unconfigured" });
 
   try {
-    // Native fetch (No 'node-fetch' required on Node 18+)
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -60,15 +78,24 @@ app.post("/api/chat", async (req, res) => {
     });
     const data = await response.json();
     res.json({ reply: data.choices[0].message.content });
-  } catch (err) { res.status(500).json({ error: "AI system error" }); }
+  } catch (err) { res.status(500).json({ error: "AI node failure" }); }
 });
 
-// --- Start ---
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`>>> [SERVER] Growth System listening on port ${PORT}`);
-  if (process.env.DB_HOST || process.env.MYSQL_URL) {
-    initDb().catch(e => console.error(">>> [INIT] Async DB failure:", e.message));
-  } else {
-    console.warn(">>> [INIT] WARNING: No DB host/URL provided. DB-reliant features will fail.");
-  }
+// --- Server START ---
+app.listen(PORT, () => {
+    console.log(`>>> [SERVER] Growth System LIVE on port ${PORT}`);
+    
+    // Async DB init
+    (async () => {
+        try {
+            console.log(">>> [DB] Initializing tables...");
+            await pool.query("SELECT 1");
+            await pool.query(`CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) UNIQUE NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
+            await pool.query(`CREATE TABLE IF NOT EXISTS habits (id INT AUTO_INCREMENT PRIMARY KEY, user_id INT, activity VARCHAR(255) NOT NULL, status VARCHAR(50) DEFAULT 'pending', timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)`);
+            await pool.query(`CREATE TABLE IF NOT EXISTS ai_response (id INT AUTO_INCREMENT PRIMARY KEY, user_id INT, prompt TEXT NOT NULL, response TEXT NOT NULL, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)`);
+            console.log(">>> [DB] Initialization complete.");
+        } catch (e) {
+            console.warn(">>> [DB] Connection Warning:", e.message);
+        }
+    })();
 });
