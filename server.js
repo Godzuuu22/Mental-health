@@ -1,9 +1,17 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import fetch from "node-fetch"; // Production stability for Node.js fetch
+import fetch from "node-fetch";
 import { initDb } from "./db.js";
 import pool from "./db.js";
+
+// --- Global Error Handlers for Production Debugging ---
+process.on('uncaughtException', (err) => {
+  console.error('>>> [CRITICAL] Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('>>> [CRITICAL] Unhandled Rejection at:', promise, 'reason:', reason);
+});
 
 dotenv.config();
 
@@ -17,128 +25,82 @@ app.use(express.json());
 // --- Advanced Feature: Rate Limiting ---
 const rateLimits = new Map();
 const rateLimitMiddleware = (req, res, next) => {
-  const ip = req.ip;
+  const ip = req.ip || "0.0.0.0";
   const now = Date.now();
-  const limit = 15; // Increased slightly for production
-  const window = 60 * 1000;
+  const data = rateLimits.get(ip) || { count: 0, start: now };
 
-  if (!rateLimits.has(ip)) {
-    rateLimits.set(ip, { count: 1, start: now });
-    return next();
+  if (now - data.start > 60000) {
+    data.count = 1;
+    data.start = now;
+  } else {
+    data.count++;
   }
 
-  const data = rateLimits.get(ip);
-  if (now - data.start > window) {
-    rateLimits.set(ip, { count: 1, start: now });
-    return next();
-  }
-
-  if (data.count >= limit) {
-    return res.status(429).json({ error: "Rate limit exceeded. Slow down." });
-  }
-
-  data.count++;
+  rateLimits.set(ip, data);
+  if (data.count > 30) return res.status(429).json({ error: "Too many requests" });
   next();
 };
 
 // --- API Endpoints ---
 
-// Health Check (Fast response for Railway monitoring)
 app.get("/health", (req, res) => {
-  res.json({ status: "ok", system: "Growth & Discipline AI System", timestamp: new Date() });
+  res.json({ status: "ok", time: new Date().toISOString() });
 });
 
-// GET /habits
 app.get("/habits", async (req, res) => {
   try {
-    const [rows] = await pool.query(`
-      SELECT h.*, u.name as user_name 
-      FROM habits h 
-      LEFT JOIN users u ON h.user_id = u.id 
-      ORDER BY timestamp DESC
-    `);
+    const [rows] = await pool.query("SELECT * FROM habits ORDER BY timestamp DESC");
     res.json(rows);
   } catch (err) {
-    console.error("Fetch habits error:", err.message);
-    res.status(500).json({ error: "Database error" });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// POST /habits
 app.post("/habits", async (req, res) => {
   const { activity, status, userName } = req.body;
-  if (!activity) return res.status(400).json({ error: "No activity provided" });
-
+  if (!activity) return res.status(400).json({ error: "No activity" });
   try {
     let [users] = await pool.query("SELECT id FROM users WHERE name = ?", [userName || "Anonymous"]);
-    let userId;
-    if (users.length === 0) {
-      const [result] = await pool.query("INSERT INTO users (name) VALUES (?)", [userName || "Anonymous"]);
-      userId = result.insertId;
-    } else {
-      userId = users[0].id;
+    let userId = users.length > 0 ? users[0].id : null;
+    if (!userId) {
+      const [r] = await pool.query("INSERT INTO users (name) VALUES (?)", [userName || "Anonymous"]);
+      userId = r.insertId;
     }
-
-    const [result] = await pool.query(
-      "INSERT INTO habits (user_id, activity, status) VALUES (?, ?, ?)",
-      [userId, activity, status || "pending"]
-    );
-    res.status(201).json({ id: result.insertId });
+    await pool.query("INSERT INTO habits (user_id, activity, status) VALUES (?, ?, ?)", [userId, activity, status || "pending"]);
+    res.status(201).json({ success: true });
   } catch (err) {
-    console.error("Log habit error:", err.message);
-    res.status(500).json({ error: "Database error" });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/chat
 app.post("/api/chat", rateLimitMiddleware, async (req, res) => {
-  const { messages, userName } = req.body;
+  const { messages } = req.body;
   const apiKey = process.env.GROQ_API_KEY;
-
-  if (!apiKey) return res.status(500).json({ error: "AI Engine not configured" });
-
-  const systemMessage = {
-    role: "system",
-    content: `You are "The Mentor", a high-performance Growth and Discipline advisor. Tone: Direct, Action-Oriented. Max 3 paragraphs.`
-  };
+  if (!apiKey) return res.status(500).json({ error: "API Key Missing" });
 
   try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "llama-3.1-8b-instant",
-        messages: [systemMessage, ...messages],
-        temperature: 0.7
+        messages: [{ role: "system", content: "You are The Mentor. Be direct." }, ...messages]
       })
     });
-
-    if (!response.ok) throw new Error("AI provider error");
-    const data = await response.json();
-    const reply = data.choices?.[0]?.message?.content;
-
-    // Async log to DB (don't block the response)
-    if (process.env.DB_HOST || process.env.MYSQL_URL) {
-      pool.query("SELECT id FROM users WHERE name = ?", [userName || "Anonymous"])
-        .then(([users]) => {
-          if (users.length > 0) {
-            pool.query("INSERT INTO ai_response (user_id, prompt, response) VALUES (?, ?, ?)", 
-            [users[0].id, messages[messages.length - 1].content, reply]);
-          }
-        }).catch(e => console.error("AI logging error:", e.message));
-    }
-
-    res.json({ reply });
+    const data = await r.json();
+    res.json({ reply: data.choices[0].message.content });
   } catch (err) {
-    res.status(500).json({ error: "Mentor is currently offline" });
+    res.status(500).json({ error: "AI Error" });
   }
 });
 
-// Start Server
-app.listen(PORT, "0.0.0.0", async () => {
-  console.log(`>>> [SERVER] Starting on port ${PORT}...`);
+// STARTUP SEQUENCE
+// 1. Listen immediately to avoid Railway timeout
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`>>> [SERVER] Listening on port ${PORT}`);
+  
+  // 2. Initialize DB asynchronously after the server is up
   if (process.env.DB_HOST || process.env.MYSQL_URL) {
-    await initDb();
+    initDb().catch(e => console.error(">>> [INIT] Async DB failure:", e));
   }
-  console.log(`>>> [SERVER] Growth AI System is LIVE.`);
 });

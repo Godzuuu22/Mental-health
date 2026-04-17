@@ -4,35 +4,36 @@ import dotenv from "dotenv";
 dotenv.config();
 
 /**
- * MySQL connection configuration
- * Supports both individual variables and a single MYSQL_URL (common for Railway/Render).
+ * Advanced DB Configuration
+ * We use a URL-first approach for Railway, with a fallback object for local dev.
  */
-const connectionConfig = process.env.MYSQL_URL || {
-  host: process.env.DB_HOST || "localhost",
-  user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "",
-  database: process.env.DB_NAME || "railway", 
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-  ssl: {
-    rejectUnauthorized: false // Often required for Railway production MySQL
-  }
-};
+let pool;
 
-const pool = mysql.createPool(connectionConfig);
+if (process.env.MYSQL_URL) {
+  console.log(">>> [DB] Using MYSQL_URL for connection.");
+  pool = mysql.createPool(process.env.MYSQL_URL);
+} else {
+  console.log(">>> [DB] Using separate variables for connection.");
+  pool = mysql.createPool({
+    host: process.env.DB_HOST || "localhost",
+    user: process.env.DB_USER || "root",
+    password: process.env.DB_PASSWORD || "",
+    database: process.env.DB_NAME || "railway",
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    ssl: { rejectUnauthorized: false }
+  });
+}
 
 /**
- * Initializes the database tables required for the Growth & Discipline AI System.
+ * Initializes the database tables.
  */
 export const initDb = async () => {
   try {
-    console.log(">>> [DB] Checking connection & initializing tables...");
-    
-    // Test the connection
+    console.log(">>> [DB] Pinging database...");
     await pool.query("SELECT 1");
-
-    // 1. Users table
+    
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -41,7 +42,6 @@ export const initDb = async () => {
       )
     `);
 
-    // 2. Habits table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS habits (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -53,7 +53,6 @@ export const initDb = async () => {
       )
     `);
 
-    // 3. AI responses table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS ai_response (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -65,10 +64,9 @@ export const initDb = async () => {
       )
     `);
 
-    console.log(">>> [DB] Initialization complete.");
+    console.log(">>> [DB] All tables verified/created.");
   } catch (err) {
-    console.error(">>> [DB] Initialization Error:", err.message);
-    // Note: Don't re-throw here so the server can at least start and provide health-checks
+    console.error(">>> [DB] CONNECTION ERROR:", err.message);
   }
 };
 
