@@ -2,11 +2,15 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import mysql from "mysql2/promise";
+import path from "path";
+import { fileURLToPath } from "url";
 
 // --- STARTUP DATA ---
 dotenv.config();
 const PORT = process.env.PORT || 3000;
 const MYSQL_URL = process.env.MYSQL_URL;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 console.log("-----------------------------------------");
 console.log(`>>> [BOOT] Server sequence starting on port ${PORT}...`);
@@ -43,7 +47,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --- Endpoints ---
+// --- API Endpoints ---
 app.get("/health", (req, res) => {
     res.json({ 
         status: "alive", 
@@ -117,6 +121,14 @@ app.post("/api/chat", async (req, res) => {
     console.error(">>> [AI] Failure:", err.message);
     res.status(500).json({ error: "AI node failure" }); 
   }
+});
+
+// --- Static Assets (Frontend) ---
+app.use(express.static(path.join(__dirname, "dist")));
+
+// Fallback for SPA Routing
+app.get("*", (req, res) => {
+    res.sendFile(path.join(__dirname, "dist", "index.html"));
 });
 
 // --- Server START ---
